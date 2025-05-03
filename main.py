@@ -126,6 +126,8 @@ def handleSignIn(driver, maxAttempts=5, failedAttempts=0):
 def main():
     chrome_opts = Options()
     chrome_opts.add_argument("--window-size=1920,1080")
+    # chrome_opts.add_argument("--headless=new")
+    # chrome_opts.add_argument("--disable-gpu")
 
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=chrome_opts)
@@ -136,6 +138,12 @@ def main():
 
         if(handleSignIn(driver)):
             print("Sign in successful.")
+
+            driver.save_screenshot("screenshots/screenshot.png")
+            print("Screenshot saved as screenshot.png")
+
+            # Ok now here I want to pass the screenshot to the LLM
+
             input("Press Enter to exit…")
         else:
             print("Sign in failed.")
