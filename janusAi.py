@@ -4,7 +4,7 @@ from janus.models import MultiModalityCausalLM, VLChatProcessor
 from janus.utils.io import load_pil_images
 
 # specify the path to the model
-model_path = "./Janus-Pro-1B"
+model_path = "./models/Janus-Pro-1B"
 vl_chat_processor: VLChatProcessor = VLChatProcessor.from_pretrained(model_path)
 tokenizer = vl_chat_processor.tokenizer
 
@@ -13,8 +13,14 @@ vl_gpt: MultiModalityCausalLM = AutoModelForCausalLM.from_pretrained(
 )
 vl_gpt = vl_gpt.to(torch.bfloat16).cuda().eval()
 
-question="Describe the image and is the entity on the image dangerous?"
-image='screenshots/screenshot.png'
+question = (
+    "This is a screenshot of a Tweet from a Twitter feed. "
+    "Please explain the content of the Tweet, "
+    "and what is happening in the image. "
+    "Please be as detailed as possible. "
+)
+
+image='screenshots/tweet.png'
 conversation = [
     {
         "role": "<|User|>",
