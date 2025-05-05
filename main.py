@@ -6,7 +6,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException, WebDriverException
 import getpass
 from dotenv import load_dotenv
 import os
@@ -23,11 +23,6 @@ TWITTER_USERNAME = os.getenv("TWITTER_USERNAME")
 
 paused = False
 
-def getWebElementHash(element):
-    post_art = element.find_element(By.TAG_NAME, "article")
-    post_raw = post_art.get_attribute("aria-labelledby") or ""
-    post_hash = hashlib.md5(post_raw.encode("utf-8")).hexdigest()
-    return post_hash
 
 def start_key_listener():
     """Spawn a daemon thread that flips `paused` whenever spacebar is hit."""
@@ -165,116 +160,96 @@ def is_in_viewport(driver, elem):
              r.right<=(window.innerWidth||document.documentElement.clientWidth);
     """, elem)
 
-def scrollFeed(driver, pause_between=1, load_timeout=10):
-    start_key_listener()
-    hashedPosts = []
+def scrollFeed(driver, pause_between=1.0, load_timeout=10):
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    import hashlib, time, traceback
 
-    timeline = WebDriverWait(driver, 10).until(
-        EC.presence_of_element_located((By.XPATH,
-            "//div[@aria-label='Timeline: Your Home Timeline']"
-        ))
-    )
-    feed = timeline.find_element(By.XPATH, "./div[1]")
+    # Start your spacebar pause/resume listener
+    start_key_listener()       # toggles global `paused`
+    seen_hashes = set()        # hashes of tweets we've highlighted
+    tweet_index = 0            # counter for which tweet we're on
 
-    # --- grab the first tweet's raw aria-labelledby & hash it ---
-    first_wrap   = feed.find_elements(By.XPATH, "./*")[0]
-    first_art    = first_wrap.find_element(By.TAG_NAME, "article")
-    first_raw    = first_art.get_attribute("aria-labelledby") or ""
-    first_hash   = hashlib.md5(first_raw.encode("utf-8")).hexdigest()
-    print(f"Tracking first tweet hash = {first_hash}\n")
+    # 1) Locate the timeline container
+    try:
+        timeline = WebDriverWait(driver, load_timeout).until(
+            EC.presence_of_element_located((By.XPATH,
+                "//div[@aria-label='Timeline: Your Home Timeline']"
+            ))
+        )
+        feed = timeline.find_element(By.XPATH, "./div[1]")
+    except Exception as e:
+        print("❌ Failed to locate timeline container:", e)
+        return
 
-    index = 0
+    # 2) Main loop: fetch, filter, highlight
     while True:
-        print("fetching new posts…")
-        posts = feed.find_elements(By.XPATH, "./*")
-
-        # remove the count because it is not needed due to how the lazy load works
-        # I will do this in the morning
-        count = len(posts)
-
-        realIndex = 0
-        for post in posts:
-            post_hash = getWebElementHash(post)
-            print(f"[Post] Tweet {post_hash}")
-            if (len(hashedPosts) == 0):
-                break
-            if (post_hash == hashedPosts[-1]):
-                realIndex += 1
-                break
-            realIndex += 1
-
-        print(f"[realIndex] {realIndex}")
-
-        # print(f"[Status] Tweet {first_hash} is {status}")
-
-        # --- lazy‑load logic ---
-        if index >= count:
-            if count == 0:
-                print("No posts at all—exiting.")
-                break
-            print(f"Reached {count} posts; loading more…")
-            driver.execute_script(
-                "arguments[0].scrollIntoView({block:'center'});",
-                posts[-1]
-            )
-            try:
-                WebDriverWait(driver, load_timeout).until(
-                    lambda d: len(feed.find_elements(By.XPATH, "./*")) > count
-                )
-            except TimeoutException:
-                print("No additional posts loaded—done.")
-                break
+        # 2a) Grab all wrappers in the feed
+        try:
+            wrappers = feed.find_elements(By.XPATH, "./*")
+        except Exception as e:
+            print("⚠️  Error fetching wrappers:", e)
+            time.sleep(pause_between)
             continue
 
-        # --- pause support ---
-        while paused:
-            time.sleep(0.1)
+        # 2b) Filter wrappers to those with <article> and compute hashes
+        valid = []
+        for idx, wrap in enumerate(wrappers):
+            try:
+                arts = wrap.find_elements(By.TAG_NAME, "article")
+                if not arts:
+                    continue
+                raw = arts[0].get_dom_attribute("aria-labelledby") or ""
+                h = hashlib.md5(raw.encode("utf-8")).hexdigest()
+                valid.append((wrap, h))
+            except Exception as e:
+                print(f"⚠️  Error hashing wrapper at index {idx}:", e)
+                continue
 
-        # --- highlight next post ---
+        # 2c) Pick the first unseen tweet
+        next_item = None
+        for wrap, h in valid:
+            if h not in seen_hashes:
+                next_item = (wrap, h)
+                break
+
+        # 2d) If none, scroll down and retry
+        if not next_item:
+            try:
+                print("No new tweets found. Scrolling…")
+                driver.execute_script("window.scrollBy(0, window.innerHeight);")
+            except Exception as e:
+                print("⚠️  Scroll error:", e)
+            time.sleep(pause_between)
+            continue
+
+        # 3) Highlight the next tweet
+        wrap, h = next_item
+        tweet_index += 1
+        print(f"[#{tweet_index}] Highlighting tweet {h}")
+        seen_hashes.add(h)
+
         try:
-            post = posts[realIndex]
-
-            snippet = post.text.replace("\n", " ")[:30]
-            print(f"→ Highlighting [{index+1}/{count}] '{snippet}…'")
-
-            post_hash = getWebElementHash(post)
-            print(f"[Current] Tweet {post_hash}")
-            if (len(hashedPosts) > 1 and index > 1):
-                prev_hash = getWebElementHash(posts[index-1])
-                if (prev_hash != hashedPosts[-1]):
-                    print(f"[Previous] Tweet error {prev_hash} != {hashedPosts[-1]}")\
-                    # calcualte the diff between the two hashes and set the index 
-     
-
-            hashedPosts.append(post_hash)
-
             driver.execute_script("""
-                arguments[0].style.border='3px solid blue';
+                arguments[0].style.border = '3px solid blue';
                 arguments[0].scrollIntoView({block:'center'});
-            """, post)
+            """, wrap)
+        except Exception as e:
+            print(f"⚠️  Error highlighting tweet #{tweet_index}:", e)
 
-            index += 1
-            # interruptible sleep
-            waited = 0
-            while waited < pause_between:
+        # 4) Pause so you can see it (still responsive to spacebar)
+        waited = 0.0
+        while waited < pause_between:
+            try:
                 if not paused:
                     time.sleep(0.1)
                     waited += 0.1
                 else:
-                    # print the previous 8 tweet's hash for loop
-                    print("here")
-                    for i in range(5):
-                        post_hash = getWebElementHash(posts[index-i-1])
-                        print(f"[Previous] Tweet {post_hash}")       
-                    break
-
-        except StaleElementReferenceException:
-            print(f"⚠️  Post at index {index} went stale—retrying.")
-            time.sleep(1)
-            continue
-
-    print("✨ Finished iterating all lazy‑loaded posts.")
-    print("✨ Finished list: ", hashedPosts)
+                    time.sleep(0.1)
+            except Exception:
+                break
+        # loop back for the next tweet
 
 def main():
     chrome_opts = Options()
